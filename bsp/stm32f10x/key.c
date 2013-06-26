@@ -2,169 +2,123 @@
 #include "board.h"
 
 #include <rtthread.h>
-#include <rtgui/event.h>
-#include <rtgui/kbddef.h>
-#include <rtgui/rtgui_server.h>
-
 #include "key.h"
 
 struct key_device
 {
     struct rt_device parent;
     rt_timer_t poll_timer;
+    struct rt_semaphore *key_semaphore;
+    rt_uint32_t key_value;
+    rt_uint32_t key_cnt;
+    rt_uint32_t (*GetKeyDat)(void);
 };
 
 static struct key_device *key = RT_NULL;
 
-static void NVIC_Configuration(void)
+rt_uint32_t GetKeyBoard(void)
 {
-    NVIC_InitTypeDef NVIC_InitStructure;
-
-    /* Enable the EXTI0 Interrupt */
-    NVIC_InitStructure.NVIC_IRQChannel = EXTI0_IRQn;
-    NVIC_InitStructure.NVIC_IRQChannelPreemptionPriority = 0;
-    NVIC_InitStructure.NVIC_IRQChannelSubPriority = 9;
-    NVIC_InitStructure.NVIC_IRQChannelCmd = ENABLE;
-    NVIC_Init(&NVIC_InitStructure);
-}
-
-rt_inline void EXTI_Enable(rt_uint32_t enable)
-{
-    EXTI_InitTypeDef EXTI_InitStructure;
-
-    /* Configure  EXTI  */
-    EXTI_InitStructure.EXTI_Line = EXTI_Line0;
-    EXTI_InitStructure.EXTI_Mode = EXTI_Mode_Interrupt;
-    EXTI_InitStructure.EXTI_Trigger = EXTI_Trigger_Falling;//FallingÏÂ½µÑØ RisingÉÏÉý
-
-    if (enable)
-    {
-        /* enable */
-        EXTI_InitStructure.EXTI_LineCmd = ENABLE;
-    }
-    else
-    {
-        /* disable */
-        EXTI_InitStructure.EXTI_LineCmd = DISABLE;
-    }
-
-    EXTI_Init(&EXTI_InitStructure);
-    EXTI_ClearITPendingBit(EXTI_Line0);
-}
-
-static void EXTI_Configuration(void)
-{
-    /* PB1 touch INT */
-    {
-        GPIO_InitTypeDef GPIO_InitStructure;
-        RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOA,ENABLE);
-
-        GPIO_InitStructure.GPIO_Pin = GPIO_Pin_0;
-        GPIO_InitStructure.GPIO_Mode = GPIO_Mode_IPU;
-        GPIO_InitStructure.GPIO_Speed = GPIO_Speed_2MHz;
-        GPIO_Init(GPIOA,&GPIO_InitStructure);
-    }
-
-    GPIO_EXTILineConfig(GPIO_PortSourceGPIOA, GPIO_PinSource0);
-
-    /* Configure  EXTI  */
-    EXTI_Enable(1);
-}
-
-void EXTI0_IRQHandler(void)
-{
-    EXTI_Enable(0);
-    
-    if(key != RT_NULL)
-    {
-        rt_timer_start(key->poll_timer);
-    }
-
-    EXTI_ClearITPendingBit(EXTI_Line0);
+    /* read GPIO port*/
+    return VK_NULL;
 }
 
 void Keypad_timeout(void* parameter)
 {
-    static unsigned char key_down = 0, key_cnt = 0;
-    int tmer = RT_TICK_PER_SECOND / 10;
-    struct rtgui_event_kbd kbdevent;
-    
-    if ((!key_down) && GPIO_ReadInputDataBit(GPIOA, GPIO_Pin_0) != 0)
+    struct key_device *key_d = (struct key_device *)parameter;
+    rt_uint32_t dat;
+
+    if(key_d->GetKeyDat == RT_NULL)
     {
-        EXTI_Enable(1);
-        key_cnt = 0;
-        /* stop timer */
-        rt_timer_stop(key->poll_timer);
-        rt_timer_control(key->poll_timer , RT_TIMER_CTRL_SET_TIME , &tmer);
+        rt_timer_stop(key_d->poll_timer);
         return;
     }
-
-    if(GPIO_ReadInputDataBit(GPIOA, GPIO_Pin_0) != 0)
+    
+    dat = key_d->GetKeyDat() & VK_MASK;
+    if(key_d->key_value != dat)
     {
-        EXTI_Enable(1);
-        /* stop timer */
-        rt_timer_stop(key->poll_timer);
-        key_down = 0;
-        key_cnt = 0;
+        if(++key_d->key_cnt >= 3)
+        {
+            /* 150ms arrival*/
+            key_d->key_cnt = 0;
+            
+            if(dat != VK_NULL)
+            {
+                key_d->key_value = dat;
+                key_d->parent.user_data = (void *)(dat | VK_KEY_DOWN);
+            }
+            else
+            {
+                key_d->parent.user_data = (void *)((key_d->key_value & VK_MASK) | VK_KEY_UP);
+                key_d->key_value = dat;
+            }
 
-        kbdevent.parent.type = RTGUI_EVENT_KBD;
-        kbdevent.parent.sender = RT_NULL;
-        kbdevent.type = RTGUI_KEYUP;
-        kbdevent.key = RTGUIK_RIGHT;
-        kbdevent.mod = RTGUI_KMOD_NONE;
-        kbdevent.unicode = 0;
-
-        rt_kprintf("key up\r\n");
-
-        rtgui_server_post_event(&kbdevent.parent, sizeof(struct rtgui_event_kbd));
-        rt_timer_control(key->poll_timer , RT_TIMER_CTRL_SET_TIME , &tmer);
+            rt_sem_release(key_d->key_semaphore);
+        }
     }
     else
     {
-        if(key_down == 0)
+        if(key_d->key_value & VK_MASK != VK_NULL)
         {
-            key_down = 1;
-
-            rt_kprintf("key down\r\n");
-            kbdevent.parent.type = RTGUI_EVENT_KBD;
-            kbdevent.parent.sender = RT_NULL;
-            kbdevent.type = RTGUI_KEYDOWN;
-            kbdevent.key = RTGUIK_RIGHT;
-            kbdevent.mod = RTGUI_KMOD_NONE;
-            kbdevent.unicode = 0;
-            rtgui_server_post_event(&kbdevent.parent, sizeof(struct rtgui_event_kbd));
-            
-            tmer = RT_TICK_PER_SECOND/5;
-            rt_timer_control(key->poll_timer , RT_TIMER_CTRL_SET_TIME , &tmer);
+            /* repeat key */
+            if(++key_d->key_cnt >= 40)
+            {
+                /*delay 2s*/
+                rt_sem_release(key_d->key_semaphore);
+                key_d->key_cnt = 35;
+            }
         }
         else
         {
-            if(++key_cnt >= 10)
-            {
-                key_cnt = 9;
-                rt_kprintf("key repeat\r\n");
-                kbdevent.parent.type = RTGUI_EVENT_KBD;
-                kbdevent.parent.sender = RT_NULL;
-                kbdevent.type = RTGUI_KEYDOWN;
-                kbdevent.key = RTGUIK_RIGHT;
-                kbdevent.mod = RTGUI_KMOD_NONE;
-                kbdevent.unicode = 0;
-                rtgui_server_post_event(&kbdevent.parent, sizeof(struct rtgui_event_kbd));
-            }
+            key_d->parent.user_data = VK_NULL;
+            key_d->key_cnt = 0;
+            key_d->key_value = VK_NULL;
         }
     }
 }
 
+static rt_err_t rt_keyboard_open(rt_device_t dev, rt_uint16_t oflag)
+{
+    rt_timer_start(((struct key_device *)dev)->poll_timer);
+    return RT_EOK;
+}
+
+static rt_err_t rt_keyboard_close(rt_device_t dev)
+{
+    rt_timer_stop(((struct key_device *)dev)->poll_timer);
+    return RT_EOK;
+}
+
 static rt_err_t rt_keyboard_init (rt_device_t dev)
 {
-    NVIC_Configuration();
-    EXTI_Configuration();
-
+    /*
+     * configure the gpio pin as input
+     */
     return RT_EOK;
 }
 
 static rt_err_t rt_keyboard_control (rt_device_t dev, rt_uint8_t cmd, void *args)
 {
+    if(!(dev->flag & RT_DEVICE_OFLAG_OPEN))
+        return RT_EIO;
+    
+    switch(cmd)
+    {
+        case RT_KEYBOARD_READ_VALUE:
+            if(rt_sem_take(((struct key_device *)dev)->key_semaphore, RT_WAITING_FOREVER))
+            {
+                rt_uint32_t dat;
+                dat = (rt_uint32_t)((struct key_device *)dev)->parent.user_data;
+                if(dat != VK_NULL)
+                {
+                    *(rt_uint32_t *)args = dat;
+                }
+                else
+                {
+                    return RT_EEMPTY;
+                }
+            }
+            break;
+    }
     return RT_EOK;
 }
 
@@ -178,11 +132,16 @@ void rt_keyboard_hw_init(void)
     key->parent.type = RT_Device_Class_Unknown;
     key->parent.init = rt_keyboard_init;
     key->parent.control = rt_keyboard_control;
+    key->parent.open = rt_keyboard_open;
+    key->parent.close = rt_keyboard_close;
     key->parent.user_data = RT_NULL;
 
-    /* create 1/10 second timer */
-    key->poll_timer = rt_timer_create("keypad", Keypad_timeout, RT_NULL,
-                                        RT_TICK_PER_SECOND/10, RT_TIMER_FLAG_PERIODIC);
+    key->GetKeyDat = GetKeyBoard;
+
+    /* create 1/20 second timer */
+    key->poll_timer = rt_timer_create("keypad", Keypad_timeout, &key,
+                                        RT_TICK_PER_SECOND/20, RT_TIMER_FLAG_PERIODIC);
+    key->key_semaphore = rt_sem_create("keyboard", 0, RT_IPC_FLAG_FIFO);
 
     /* register touch device to RT-Thread */
     rt_device_register(&(key->parent), "keypad", RT_DEVICE_FLAG_RDWR);
@@ -191,20 +150,10 @@ void rt_keyboard_hw_init(void)
 #ifdef RT_USING_FINSH
 #include <finsh.h>
 
-void key_t( rt_uint16_t key)
+void key_t( rt_uint16_t vk_key)
 {
-    struct rtgui_event_kbd kdb;
-
-    kdb.parent.type = RTGUI_EVENT_KBD;
-    kdb.type = RTGUI_KEYDOWN;
-    kdb.key = key;
-    kdb.mod = RTGUI_KMOD_NONE;
-    kdb.unicode = 0;
-    
-    rtgui_server_post_event(&kdb.parent, sizeof(struct rtgui_event_kbd));
-    rt_thread_delay(2) ;
-    kdb.type = RTGUI_KEYUP;
-    rtgui_server_post_event(&kdb.parent, sizeof(struct rtgui_event_kbd));
+    key->parent.user_data = (void *)(vk_key | VK_KEY_DOWN);
+    rt_sem_release(key->key_semaphore);
 }
 
 FINSH_FUNCTION_EXPORT(key_t, key ascii) ;

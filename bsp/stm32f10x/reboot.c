@@ -1,6 +1,5 @@
 #include "stm32f10x.h"
 #include "rtthread.h"
-#include <rtgui/driver.h>
 
 
 #define printk          rt_kprintf
