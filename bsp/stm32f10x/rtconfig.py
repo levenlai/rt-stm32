@@ -26,7 +26,7 @@ RT_USING_LCD_TYPE = 'ILIDEMO'
 
 if  CROSS_TOOL == 'gcc':
 	PLATFORM 	= 'gcc'
-	EXEC_PATH 	= 'D:/Program Files/ARM_Complier/bin'
+	EXEC_PATH 	= 'D:/Program Files/arm-2012.09/arm-none-eabi/bin'
 elif CROSS_TOOL == 'keil':
 	PLATFORM 	= 'armcc'
 	EXEC_PATH 	= 'C:/Keil'
